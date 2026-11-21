@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Retail Pontianak Selatan</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; }
+    #map { height: 100vh; width: 100%; }
+    .panel {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      background: #fff; padding: 12px 14px; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.3); font-size: 14px; line-height: 1.8;
+    }
+    .panel h4 { margin: 0 0 6px; }
+    .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin: 0 6px 0 4px; }
+    .cluster-icon {
+      background: #34495e; color: #fff; border-radius: 50%;
+      text-align: center; font-weight: bold; border: 3px solid #fff;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <h4>Filter Merek</h4>
+    <label><input type="checkbox" id="f-indomaret" checked><span class="dot" style="background:#e74c3c"></span>Indomaret (<span id="n-indomaret">0</span>)</label><br>
+    <label><input type="checkbox" id="f-alfamart" checked><span class="dot" style="background:#2980b9"></span>Alfamart (<span id="n-alfamart">0</span>)</label><br>
+    <label><input type="checkbox" id="f-lainnya" checked><span class="dot" style="background:#27ae60"></span>Lainnya (<span id="n-lainnya">0</span>)</label>
+    <hr>
+    <label><input type="checkbox" id="f-cluster">Aktifkan cluster</label>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script>
+    // ===== STATE =====
+    const state = {
+      filters: { indomaret: true, alfamart: true, lainnya: true },
+      cluster: false
+    };
+    const WARNA = { indomaret: '#e74c3c', alfamart: '#2980b9', lainnya: '#27ae60' };
+
+    let dataRetail = null;     // GeoJSON dari API
+    let layerRetail = null;    // layer yang sedang tampil
+
+    // ===== PETA =====
+    const map = L.map('map').setView([-0.0430, 109.3330], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Indomaret / Alfamart / selain itu = lainnya
+    function kelompok(merek) {
+      const m = (merek || '').toLowerCase();
+      if (m === 'indomaret') return 'indomaret';
+      if (m === 'alfamart') return 'alfamart';
+      return 'lainnya';
+    }
+
+    function buatMarker(feature, latlng) {
+      const p = feature.properties;
+      const warna = WARNA[kelompok(p.merek)];
+      const marker = L.circleMarker(latlng, {
+        radius: 8, color: '#fff', weight: 2, fillColor: warna, fillOpacity: 0.9
+      });
+      marker.bindTooltip(p.merek);   // hover: merek singkat
+      marker.bindPopup(              // klik: detail lengkap
+        `<b>${p.nama}</b><br>Merek: ${p.merek}<br>Jam buka: ${p.jam_buka}` +
+        `<br>Luas: ${p.luas_m2} m²<br>Parkir: ${p.parkir}`
+      );
+      return marker;
+    }
+
+    // ===== RENDER =====
+    function renderRetail() {
+      if (!dataRetail) return;
+      if (layerRetail) map.removeLayer(layerRetail);
+
+      const terfilter = dataRetail.features.filter(f => state.filters[kelompok(f.properties.merek)]);
+      const markers = terfilter.map(f => {
+        const [lon, lat] = f.geometry.coordinates;
+        return buatMarker(f, L.latLng(lat, lon));
+      });
+
+      if (state.cluster) {
+        layerRetail = L.markerClusterGroup({
+          iconCreateFunction: (cluster) => {
+            const n = cluster.getChildCount();
+            return L.divIcon({
+              html: `<div style="line-height:36px">${n}</div>`,
+              className: 'cluster-icon',
+              iconSize: L.point(40, 40)
+            });
+          }
+        });
+        markers.forEach(m => layerRetail.addLayer(m));
+      } else {
+        layerRetail = L.layerGroup(markers);
+      }
+      layerRetail.addTo(map);
+    }
+
+    // ===== EVENT CHECKBOX =====
+    ['indomaret', 'alfamart', 'lainnya'].forEach(k => {
+      document.getElementById('f-' + k).addEventListener('change', e => {
+        state.filters[k] = e.target.checked;
+        renderRetail();
+      });
+    });
+    document.getElementById('f-cluster').addEventListener('change', e => {
+      state.cluster = e.target.checked;
+      renderRetail();
+    });
+
+    // ===== AMBIL DATA (async/await) =====
+    async function muatData() {
+      try {
+        const res = await fetch('/api/data/retail');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        dataRetail = await res.json();
+
+        // hitung jumlah per kelompok untuk label checkbox
+        const hitung = { indomaret: 0, alfamart: 0, lainnya: 0 };
+        dataRetail.features.forEach(f => hitung[kelompok(f.properties.merek)]++);
+        for (const k in hitung) document.getElementById('n-' + k).textContent = hitung[k];
+
+        renderRetail();
+      } catch (err) {
+        console.error('Gagal memuat data retail:', err);
+        alert('Data gagal dimuat. Cek apakah server Laravel jalan.');
+      }
+    }
+    muatData();
+  </script>
+</body>
+</html>
